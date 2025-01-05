@@ -5,6 +5,7 @@ from flask_jwt_extended import JWTManager, create_access_token, jwt_required, ge
 from flask_migrate import Migrate
 import os
 from flask_cors import CORS, cross_origin  # Import Flask-CORS
+import json
 
 from werkzeug.utils import secure_filename
 from datetime import timedelta, datetime  # Add datetime here
@@ -54,6 +55,9 @@ def before_request():
     Global token verification applied before each request.
     Skips validation for OPTIONS requests and public routes.
     """
+        # Skip token validation for CORS preflight
+    if request.method == "OPTIONS":
+        return None
     # Print incoming request details for debugging
     print(f"Incoming request method: {request.method}")
     print(f"Incoming request path: {request.path}")
@@ -62,15 +66,13 @@ def before_request():
             print(f"Skipping token validation for /uploads or matching path: {request.path}")
             return None  # Skip validation for /uploads
     # Allow Flask-CORS to handle OPTIONS preflight requests
-    if request.method == "OPTIONS":
-        print("Skipping token validation for OPTIONS preflight request")
-        return None  # Let CORS handle the preflight response
+
     if request.endpoint and "jwt_required" in str(app.view_functions[request.endpoint]):
         return  # Skip if `@jwt_required` is already applied
     # List of public paths that don't require authentication
     public_paths = [
         "/signin", "/forgot_password", "/reset-password",
-        "/api/gallery", "/api/contact", "/uploads", "/api/packages", "/api/reviews", "/api/inquiries"
+        "/api/gallery", "/api/contact", "/uploads", "/api/packages", "/api/reviews", "/api/inquiries", "/api/earnings", "/api/one_time_cleanings", "/api/recurring_payments", "/api/recurring_paid", "/api/cleaning_dates_summary", "/api/total_paid_cleanings_summary"
     ]
 
     # Check if request path matches any public path
@@ -154,7 +156,6 @@ class Gallery(db.Model):
     image_url = db.Column(db.String(255), nullable=False)
     caption = db.Column(db.String(255), nullable=True)
     category = db.Column(db.String(50), nullable=True)
-    photo_type = db.Column(db.String(20), nullable=False)  # New column for photo type
     created_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)
 
     def to_dict(self):
@@ -163,22 +164,11 @@ class Gallery(db.Model):
             "image_url": self.image_url,
             "caption": self.caption,
             "category": self.category,
-            "photo_type": self.photo_type,
             "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S")
         }
 
-VALID_PHOTO_TYPES = {"portrait", "couples", "events", "cosplay", "pets", "misc"}
-def validate_photo_type(photo_type):
-    if photo_type not in VALID_PHOTO_TYPES:
-        raise ValueError("Invalid photo type. Allowed types are: " + ", ".join(VALID_PHOTO_TYPES))
-# Configure Upload Folder
-UPLOAD_FOLDER = "uploads"
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# Utility Function to Check Allowed Files
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 
 # Route: Upload a Photo to the Gallery
@@ -199,13 +189,6 @@ def upload_photo():
     image_url = data.get("image_url")
     caption = data.get("caption", "")
     category = data.get("category", "Uncategorized")
-    photo_type = data.get("photo_type", "").lower()
-
-    # Validate photo type
-    try:
-        validate_photo_type(photo_type)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
 
     # Validate that image_url is provided
     if not image_url or not image_url.startswith(("http://", "https://")):
@@ -216,7 +199,6 @@ def upload_photo():
         image_url=image_url,  # Use the provided URL
         caption=caption,
         category=category,
-        photo_type=photo_type
     )
     db.session.add(new_photo)
     db.session.commit()
@@ -231,14 +213,10 @@ def get_gallery():
     Fetch all gallery images with optional category or photo_type filtering.
     """
     category = request.args.get("category", None)
-    photo_type = request.args.get("photo_type", None)
-
     query = Gallery.query
 
     if category:
         query = query.filter(Gallery.category.ilike(f"%{category}%"))
-    if photo_type:
-        query = query.filter(Gallery.photo_type.ilike(f"%{photo_type}%"))
 
 
     photos = query.all()
@@ -429,17 +407,19 @@ def update_review(review_id):
     return jsonify({"message": "Review updated successfully and marked as pending!", "review": review.to_dict()}), 200
 
 #----------------------------------------------------------------------------------------------------
+
 class Inquiry(db.Model):
     __tablename__ = "inquiries"
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(255), nullable=False)
-    phone_number = db.Column(db.String(15), nullable=True)  # Optional
-    call_or_text = db.Column(db.String(10), nullable=False)  # "call" or "text"
+    phone_number = db.Column(db.String(15), nullable=True)  
+    call_or_text = db.Column(db.String(10), nullable=False)  
     description = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(50), nullable=False, default="pending")
     submitted_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)
-    status = db.Column(db.String(20), nullable=False, default="pending")  # New status column
+
 
     def to_dict(self):
         return {
@@ -449,10 +429,11 @@ class Inquiry(db.Model):
             "phone_number": self.phone_number,
             "call_or_text": self.call_or_text,
             "description": self.description,
-            "status": self.status,  # Include status in the response
-            "submitted_at": self.submitted_at.strftime("%Y-%m-%d %H:%M:%S")
-        }
+            "submitted_at": self.submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": self.status,  # Add this line
 
+
+        }
 
 @app.post('/api/contact')
 def submit_inquiry():
@@ -466,11 +447,18 @@ def submit_inquiry():
     if not all(data.get(field) for field in required_fields):
         return jsonify({"error": f"Missing required fields: {', '.join(required_fields)}"}), 400
 
+    status = data.get('status', 'pending').lower()  # Default to 'pending' if not provided
+    allowed_statuses = {"pending", "booked", "contacted", "services paused"}
+    if status not in allowed_statuses:
+        return jsonify({"error": f"Invalid status. Allowed values: {', '.join(allowed_statuses)}"}), 400
+
     name = data.get('name')
     email = data.get('email')
-    phone_number = data.get('phone_number')  # Optional
+    phone_number = data.get('phone_number')
     call_or_text = data.get('call_or_text').lower()
     description = data.get('description')
+    status=status  # Add this line
+
 
     if call_or_text not in ["call", "text"]:
         return jsonify({"error": "Invalid value for 'call_or_text'. Must be 'call' or 'text'."}), 400
@@ -489,6 +477,7 @@ def submit_inquiry():
     )
     db.session.add(new_inquiry)
     db.session.commit()
+
     local_tz = timezone("US/Eastern")  # Replace "US/Eastern" with your actual timezone
     submitted_at_local = new_inquiry.submitted_at.replace(tzinfo=timezone("UTC")).astimezone(local_tz)
 
@@ -497,71 +486,66 @@ def submit_inquiry():
         admin_email = os.getenv("ADMIN_EMAIL")  # Admin email from environment variable
         subject = f"New Inquiry from {name}"
         body = f"""
-    <html>
-    <head>
-        <style>
-        body {{
-            font-family: Arial, sans-serif;
-            color: #333;
-            margin: 0;
-            padding: 20px;
-            background-color: #f9f9f9;
-        }}
-        .container {{
-            background: #fff;
-            border-radius: 8px;
-            padding: 20px;
-            max-width: 600px;
-            margin: 20px auto;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-        }}
-        h2 {{
-            color: #007bff;
-        }}
-        p {{
-            margin: 8px 0;
-            line-height: 1.5;
-        }}
-        .footer {{
-            margin-top: 20px;
-            font-size: 12px;
-            color: #888;
-            text-align: center;
-        }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-        <h2>📧 New Inquiry Received</h2>
-        <p><strong>Name:</strong> {name}</p>
-        <p><strong>Email:</strong> {email}</p>
-        <p><strong>Phone Number:</strong> {phone_number or "N/A"}</p>
-        <p><strong>Contact Preference:</strong> {call_or_text.capitalize()}</p>
-        <p><strong>Description:</strong> {description}</p>
-        <div class="footer">
-            <p>Submitted on {submitted_at_local.strftime('%A, %B %d, %Y %I:%M %p')}</p>
-            <p>&copy; Golden Hour Photography</p>
-        </div>
-        </div>
-    </body>
-    </html>
-    """
-
+        <html>
+        <head>
+            <style>
+            body {{
+                font-family: Arial, sans-serif;
+                color: #333;
+                margin: 0;
+                padding: 20px;
+                background-color: #f9f9f9;
+            }}
+            .container {{
+                background: #fff;
+                border-radius: 8px;
+                padding: 20px;
+                max-width: 600px;
+                margin: 20px auto;
+                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            }}
+            h2 {{
+                color: #007bff;
+            }}
+            p {{
+                margin: 8px 0;
+                line-height: 1.5;
+            }}
+            .footer {{
+                margin-top: 20px;
+                font-size: 12px;
+                color: #888;
+                text-align: center;
+            }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+            <h2>📧 New Inquiry Received</h2>
+            <p><strong>Name:</strong> {name}</p>
+            <p><strong>Email:</strong> {email}</p>
+            <p><strong>Phone Number:</strong> {phone_number or "N/A"}</p>
+            <p><strong>Contact Preference:</strong> {call_or_text.capitalize()}</p>
+            <p><strong>Description:</strong> {description}</p>
+            <div class="footer">
+                <p>Submitted on {submitted_at_local.strftime('%A, %B %d, %Y %I:%M %p')}</p>
+                <p>&copy; Your Company Name</p>
+            </div>
+            </div>
+        </body>
+        </html>
+        """
 
         send_email(
             recipient=admin_email,
             subject=subject,
-            body=body,  # Add the body here
-
-            background_image_url=None
+            body=body
         )
     except Exception as e:
         print(f"Failed to send email: {str(e)}")
         return jsonify({"error": "Inquiry submitted but failed to notify the admin."}), 500
 
     return jsonify({"message": "Inquiry submitted successfully.", "inquiry": new_inquiry.to_dict()}), 201
-
-
 
 
 def send_email(recipient, subject, body, background_image_url=None):
@@ -591,40 +575,63 @@ def send_email(recipient, subject, body, background_image_url=None):
     except Exception as e:
         print(f"Email error: {str(e)}")
         raise e
-
-
-@app.patch('/api/inquiries/<int:inquiry_id>')
-def update_inquiry_status(inquiry_id):
+@app.get('/api/inquiries/<int:inquiry_id>')
+def get_inquiry(inquiry_id):
     """
-    Update the status of an inquiry.
-    Allowed statuses: 'pending', 'contacted', 'booked', 'booked & paid', 'completed'
+    Fetch a single inquiry by its ID.
     """
-    allowed_statuses = {"pending", "contacted", "booked", "booked & paid", "completed"}
-    data = request.get_json()
-
-    # Check if 'status' is provided
-    new_status = data.get("status")
-    if not new_status:
-        return jsonify({"error": "The 'status' field is required."}), 400
-
-    # Validate the new status
-    if new_status not in allowed_statuses:
-        return jsonify({"error": f"Invalid status. Allowed values: {', '.join(allowed_statuses)}"}), 400
-
-    # Fetch the inquiry
     inquiry = Inquiry.query.get(inquiry_id)
     if not inquiry:
         return jsonify({"error": "Inquiry not found."}), 404
 
-    try:
-        # Update the status
-        inquiry.status = new_status
-        db.session.commit()
-        return jsonify({"message": "Inquiry status updated successfully.", "inquiry": inquiry.to_dict()}), 200
-    except Exception as e:
-        print(f"Error updating inquiry status: {e}")
-        return jsonify({"error": "Failed to update inquiry status."}), 500
+    return jsonify(inquiry.to_dict()), 200
+@app.patch('/api/inquiries/<int:inquiry_id>')
+def update_inquiry(inquiry_id):
+    print(f"PATCH request received for Inquiry ID: {inquiry_id}")
 
+    data = request.get_json()
+    print("Received data:", data)
+
+    inquiry = Inquiry.query.get(inquiry_id)
+    if not inquiry:
+        print(f"Inquiry with ID {inquiry_id} not found.")
+        return jsonify({"error": "Inquiry not found."}), 404
+
+    # Update fields if provided
+    if "name" in data:
+        inquiry.name = data["name"]
+    if "email" in data:
+        email = data["email"]
+        if not re.match(r"^[^@]+@[^@]+\.[^@]+$", email):
+            print(f"Invalid email format: {email}")
+            return jsonify({"error": "Invalid email format"}), 400
+        inquiry.email = email
+    if "phone_number" in data:
+        inquiry.phone_number = data["phone_number"]
+    if "call_or_text" in data:
+        call_or_text = data["call_or_text"].lower()
+        if call_or_text not in ["call", "text"]:
+            print(f"Invalid call_or_text value: {call_or_text}")
+            return jsonify({"error": "Invalid value for 'call_or_text'. Must be 'call' or 'text'."}), 400
+        inquiry.call_or_text = call_or_text
+    if "description" in data:
+        inquiry.description = data["description"]
+    if "status" in data:
+        status = data["status"].lower()
+        allowed_statuses = {"pending", "booked", "contacted", "services paused"}
+        if status not in allowed_statuses:
+            print(f"Invalid status value: {status}")
+            return jsonify({"error": f"Invalid status. Allowed values: {', '.join(allowed_statuses)}"}), 400
+        inquiry.status = status
+
+    # Commit the changes to the database
+    try:
+        db.session.commit()
+        print(f"Inquiry with ID {inquiry_id} updated successfully.")
+        return jsonify({"message": "Inquiry updated successfully.", "inquiry": inquiry.to_dict()}), 200
+    except Exception as e:
+        print(f"Error updating inquiry: {e}")
+        return jsonify({"error": "Failed to update inquiry."}), 500
 
 @app.get('/api/inquiries')
 def get_inquiries():
@@ -635,7 +642,7 @@ def get_inquiries():
         # Get query parameters from the request
         name = request.args.get("name", "").strip()
         phone_number = request.args.get("phone_number", "").strip()
-        status = request.args.get("status", "").strip()
+        status = request.args.get("status", "").strip().lower()  # Convert to lowercase for consistency
 
         # Build query dynamically
         query = Inquiry.query
@@ -645,7 +652,7 @@ def get_inquiries():
         if phone_number:
             query = query.filter(Inquiry.phone_number.ilike(f"%{phone_number}%"))
         if status:
-            query = query.filter(Inquiry.status.ilike(f"%{status}%"))
+            query = query.filter(Inquiry.status.ilike(f"%{status}%"))  # Case-insensitive filter for status
 
         # Execute query with sorting
         inquiries = query.order_by(Inquiry.submitted_at.desc()).all()
@@ -662,6 +669,8 @@ def delete_inquiry(inquiry_id):
     """
     # Fetch the inquiry by ID
     inquiry = Inquiry.query.get(inquiry_id)
+    print(f"Attempting to delete inquiry with ID: {inquiry_id}")
+
     if not inquiry:
         return jsonify({"error": "Inquiry not found."}), 404
 
@@ -673,6 +682,608 @@ def delete_inquiry(inquiry_id):
     except Exception as e:
         print(f"Error deleting inquiry: {e}")
         return jsonify({"error": "Failed to delete the inquiry."}), 500
+
+class OneTimeCleaning(db.Model):
+    __tablename__ = "one_time_cleanings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    inquiry_id = db.Column(db.Integer, db.ForeignKey('inquiries.id'), nullable=False)  # Foreign key to Inquiry
+    date_time = db.Column(db.DateTime, nullable=False)  # Date and time for the cleaning
+    amount = db.Column(db.Float, nullable=False)  # Cleaning amount
+    paid = db.Column(db.Boolean, nullable=False, default=False)  # Whether the cleaning is paid
+    notes = db.Column(db.Text, nullable=True)  # Notes for the cleaning job
+
+    inquiry = db.relationship('Inquiry', backref='one_time_cleanings')  # Relationship to Inquiry
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "inquiry_id": self.inquiry_id,
+            "inquiry_name": self.inquiry.name,  # Reference the related inquiry's name
+            "date_time": self.date_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "amount": self.amount,
+            "paid": self.paid,
+            "notes": self.notes,  # Include notes in the response
+
+        }
+@app.post('/api/one_time_cleanings')
+def create_one_time_cleaning():
+    """
+    Create a new one-time cleaning service.
+    """
+    data = request.get_json()
+    print(request.json)  # Debugging
+
+    # Validate required fields
+    required_fields = ['inquiry_id', 'date_time', 'amount']
+    if not all(data.get(field) for field in required_fields):
+        return jsonify({"error": f"Missing required fields: {', '.join(required_fields)}"}), 400
+
+    # Validate inquiry exists
+    inquiry = Inquiry.query.get(data['inquiry_id'])
+    if not inquiry:
+        return jsonify({"error": "Inquiry not found."}), 404
+
+    # Parse date_time
+    try:
+        date_time = datetime.strptime(data['date_time'], "%Y-%m-%dT%H:%M")  # ISO 8601 format
+    except ValueError:
+        return jsonify({"error": "Invalid date format. Use 'YYYY-MM-DDTHH:MM'."}), 400
+
+    # Create a new OneTimeCleaning entry
+    one_time_cleaning = OneTimeCleaning(
+        inquiry_id=data['inquiry_id'],
+        date_time=date_time,
+        amount=data['amount'],
+        paid=data.get('paid', False),
+        notes=data.get('notes', None)  # Add notes if provided
+  
+    )
+
+    try:
+        db.session.add(one_time_cleaning)
+        db.session.commit()
+        return jsonify({"message": "One-time cleaning created successfully.", "one_time_cleaning": one_time_cleaning.to_dict()}), 201
+    except Exception as e:
+        print(f"Error creating one-time cleaning: {e}")
+        return jsonify({"error": "Failed to create one-time cleaning."}), 500
+    
+@app.patch('/api/one_time_cleanings/<int:cleaning_id>')
+def update_one_time_cleaning(cleaning_id):
+    """
+    Update an existing one-time cleaning service.
+    """
+    data = request.get_json()
+    print(f"Received PATCH request payload: {data}")  # Debugging
+
+    # Fetch the cleaning entry by ID
+    one_time_cleaning = OneTimeCleaning.query.get(cleaning_id)
+    if not one_time_cleaning:
+        return jsonify({"error": "One-time cleaning not found."}), 404
+
+    print(f"Initial cleaning data: {one_time_cleaning.to_dict()}")  # Debugging
+
+    # Update `date_time` only if it's different
+    if "date_time" in data and data["date_time"] is not None:
+        try:
+            # Handle both 'YYYY-MM-DD HH:MM:SS' and 'YYYY-MM-DDTHH:MM' formats
+            if "T" in data["date_time"]:
+                new_date_time = datetime.strptime(data["date_time"], "%Y-%m-%dT%H:%M")
+            else:
+                new_date_time = datetime.strptime(data["date_time"], "%Y-%m-%d %H:%M:%S")
+
+            if new_date_time != one_time_cleaning.date_time:
+                print(f"Updating date_time from {one_time_cleaning.date_time} to {new_date_time}")  # Debugging
+                one_time_cleaning.date_time = new_date_time
+        except ValueError:
+            print("Invalid date_time format provided.")  # Debugging
+            return jsonify({"error": "Invalid date format. Use 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DDTHH:MM'."}), 400
+
+    # Update `amount` only if it's different
+    if "amount" in data and data["amount"] is not None:
+        try:
+            new_amount = float(data["amount"])
+            if new_amount != one_time_cleaning.amount:
+                print(f"Updating amount from {one_time_cleaning.amount} to {new_amount}")  # Debugging
+                one_time_cleaning.amount = new_amount
+        except ValueError:
+            print("Invalid amount provided.")  # Debugging
+            return jsonify({"error": "Invalid amount. Must be a number."}), 400
+
+    # Update `paid` only if it's different
+    if "paid" in data and data["paid"] is not None:
+        new_paid_status = bool(data["paid"])
+        if new_paid_status != one_time_cleaning.paid:
+            print(f"Updating paid status from {one_time_cleaning.paid} to {new_paid_status}")  # Debugging
+            one_time_cleaning.paid = new_paid_status
+
+    # Update `notes` only if it's different
+    if "notes" in data and data["notes"] is not None:
+        new_notes = data["notes"]
+        if new_notes != one_time_cleaning.notes:
+            print(f"Updating notes from {one_time_cleaning.notes} to {new_notes}")  # Debugging
+            one_time_cleaning.notes = new_notes
+
+    # Commit the changes to the database
+    try:
+        print(f"Final cleaning data before commit: {one_time_cleaning.to_dict()}")  # Debugging
+        db.session.commit()
+        print("Changes successfully committed to the database.")  # Debugging
+        return jsonify({
+            "message": "One-time cleaning updated successfully.",
+            "one_time_cleaning": one_time_cleaning.to_dict()
+        }), 200
+    except Exception as e:
+        print(f"Error updating one-time cleaning: {e}")
+        return jsonify({"error": "Failed to update one-time cleaning."}), 500
+
+@app.delete('/api/one_time_cleanings/<int:cleaning_id>')
+def delete_one_time_cleaning(cleaning_id):
+    """
+    Delete an existing one-time cleaning service.
+    """
+    # Fetch the cleaning entry by ID
+    one_time_cleaning = OneTimeCleaning.query.get(cleaning_id)
+    if not one_time_cleaning:
+        return jsonify({"error": "One-time cleaning not found."}), 404
+
+    try:
+        # Delete the cleaning entry
+        db.session.delete(one_time_cleaning)
+        db.session.commit()
+        return jsonify({"message": f"One-time cleaning with ID {cleaning_id} deleted successfully."}), 200
+    except Exception as e:
+        print(f"Error deleting one-time cleaning: {e}")
+        return jsonify({"error": "Failed to delete one-time cleaning."}), 500
+    
+@app.get('/api/one_time_cleanings')
+def get_all_one_time_cleanings():
+    """
+    Fetch all one-time cleaning services with optional filters for name and paid status.
+    """
+    try:
+        # Get query parameters
+        name = request.args.get("name", "").strip()
+        paid = request.args.get("paid", "").strip()
+
+        # Build the base query
+        query = OneTimeCleaning.query.join(Inquiry)
+
+        # Apply filters based on query parameters
+        if name:
+            query = query.filter(Inquiry.name.ilike(f"%{name}%"))  # Case-insensitive search for name
+        if paid.lower() in ["true", "false"]:
+            query = query.filter(OneTimeCleaning.paid == (paid.lower() == "true"))
+
+        # Fetch the filtered results
+        one_time_cleanings = query.order_by(OneTimeCleaning.date_time.desc()).all()
+
+        # Serialize and return the results
+        return jsonify([cleaning.to_dict() for cleaning in one_time_cleanings]), 200
+    except Exception as e:
+        print(f"Error fetching one-time cleanings: {e}")
+        return jsonify({"error": "Failed to fetch one-time cleanings."}), 500
+
+
+@app.get('/api/one_time_cleanings/<int:cleaning_id>')
+def get_one_time_cleaning(cleaning_id):
+    """
+    Fetch a single one-time cleaning service by its ID.
+    """
+    one_time_cleaning = OneTimeCleaning.query.get(cleaning_id)
+    if not one_time_cleaning:
+        return jsonify({"error": "One-time cleaning not found."}), 404
+
+    return jsonify(one_time_cleaning.to_dict()), 200
+
+
+class RecurringPayment(db.Model):
+    __tablename__ = "recurring_payments"
+
+    id = db.Column(db.Integer, primary_key=True)
+    inquiry_id = db.Column(db.Integer, db.ForeignKey('inquiries.id'), nullable=False)  # Foreign key to Inquiry
+    amount = db.Column(db.Float, nullable=False)  # Amount for the recurring payment
+    frequency = db.Column(db.String(250), nullable=False)  # Frequency of the payment (e.g., "weekly", "monthly")
+    notes = db.Column(db.String(255), nullable=True)  # Optional notes for the recurring payment
+
+    inquiry = db.relationship('Inquiry', backref='recurring_payments')  # Relationship to Inquiry
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "inquiry_id": self.inquiry_id,
+            "inquiry_name": self.inquiry.name,  # Reference the related inquiry's name
+            "amount": self.amount,
+            "frequency": self.frequency,
+            "notes": self.notes
+        }
+
+@app.post('/api/recurring_payments')
+def create_recurring_payment():
+    """
+    Create a new recurring payment.
+    """
+    data = request.get_json()
+
+    # Validate required fields
+    required_fields = ['inquiry_id', 'amount', 'frequency']
+    if not all(data.get(field) for field in required_fields):
+        return jsonify({"error": f"Missing required fields: {', '.join(required_fields)}"}), 400
+
+    # Validate inquiry exists
+    inquiry = Inquiry.query.get(data['inquiry_id'])
+    if not inquiry:
+        return jsonify({"error": "Inquiry not found."}), 404
+
+    # Create a new RecurringPayment entry
+    recurring_payment = RecurringPayment(
+        inquiry_id=data['inquiry_id'],
+        amount=data['amount'],
+        frequency=data['frequency'],  # Accept any string value for frequency
+        notes=data.get('notes')  # Optional field
+    )
+
+    try:
+        db.session.add(recurring_payment)
+        db.session.commit()
+        return jsonify({
+            "message": "Recurring payment created successfully.",
+            "recurring_payment": recurring_payment.to_dict()
+        }), 201
+    except Exception as e:
+        print(f"Error creating recurring payment: {e}")
+        return jsonify({"error": "Failed to create recurring payment."}), 500
+
+
+@app.patch('/api/recurring_payments/<int:payment_id>')
+def update_recurring_payment(payment_id):
+    """
+    Update an existing recurring payment.
+    """
+    data = request.get_json()
+
+    # Fetch the payment entry by ID
+    recurring_payment = RecurringPayment.query.get(payment_id)
+    if not recurring_payment:
+        return jsonify({"error": "Recurring payment not found."}), 404
+
+    # Update fields if provided
+    if "amount" in data:
+        try:
+            recurring_payment.amount = float(data["amount"])
+        except ValueError:
+            return jsonify({"error": "Invalid amount. Must be a number."}), 400
+
+    if "frequency" in data:
+        recurring_payment.frequency = data["frequency"]  # Accept any string value for frequency
+
+    if "notes" in data:
+        recurring_payment.notes = data["notes"]
+
+    # Commit the changes to the database
+    try:
+        db.session.commit()
+        return jsonify({
+            "message": "Recurring payment updated successfully.",
+            "recurring_payment": recurring_payment.to_dict()
+        }), 200
+    except Exception as e:
+        print(f"Error updating recurring payment: {e}")
+        return jsonify({"error": "Failed to update recurring payment."}), 500
+@app.delete('/api/recurring_payments/<int:payment_id>')
+def delete_recurring_payment(payment_id):
+    """
+    Delete an existing recurring payment.
+    """
+    # Fetch the payment entry by ID
+    recurring_payment = RecurringPayment.query.get(payment_id)
+    if not recurring_payment:
+        return jsonify({"error": "Recurring payment not found."}), 404
+
+    try:
+        # Delete the payment entry
+        db.session.delete(recurring_payment)
+        db.session.commit()
+        return jsonify({"message": f"Recurring payment with ID {payment_id} deleted successfully."}), 200
+    except Exception as e:
+        print(f"Error deleting recurring payment: {e}")
+        return jsonify({"error": "Failed to delete recurring payment."}), 500
+
+@app.get('/api/recurring_payments')
+def get_all_recurring_payments():
+    """
+    Fetch all recurring payments with optional search by name or frequency.
+    """
+    try:
+        # Get query parameters
+        name = request.args.get("name", "").strip()
+        frequency = request.args.get("frequency", "").strip()
+
+        # Build the query
+        query = RecurringPayment.query.join(Inquiry)
+
+        if name:
+            query = query.filter(Inquiry.name.ilike(f"%{name}%"))  # Case-insensitive search for name
+        if frequency:
+            query = query.filter(RecurringPayment.frequency.ilike(f"%{frequency}%"))  # Case-insensitive search for frequency
+
+        # Fetch results
+        recurring_payments = query.order_by(RecurringPayment.id.desc()).all()
+
+        return jsonify([payment.to_dict() for payment in recurring_payments]), 200
+    except Exception as e:
+        print(f"Error fetching recurring payments: {e}")
+        return jsonify({"error": "Failed to fetch recurring payments."}), 500
+
+
+@app.get('/api/recurring_payments/<int:payment_id>')
+def get_recurring_payment(payment_id):
+    """
+    Fetch a single recurring payment by its ID.
+    """
+    recurring_payment = RecurringPayment.query.get(payment_id)
+    if not recurring_payment:
+        return jsonify({"error": "Recurring payment not found."}), 404
+
+    return jsonify(recurring_payment.to_dict()), 200
+
+
+class RecurringPaid(db.Model):
+    __tablename__ = "recurring_paid"
+
+    id = db.Column(db.Integer, primary_key=True)
+    recurring_payment_id = db.Column(db.Integer, db.ForeignKey('recurring_payments.id'), nullable=False)  # Foreign key to RecurringPayment
+    dates_related = db.Column(db.String(255), nullable=True)  # Dates the payment relates to
+    amount_paid = db.Column(db.Float, nullable=False)  # Amount paid for this occurrence
+    submitted_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)  # Timestamp for when the payment was submitted
+    notes = db.Column(db.String(255), nullable=True)  # Optional notes
+
+    recurring_payment = db.relationship('RecurringPayment', backref='payments_made')  # Relationship to RecurringPayment
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "recurring_payment_id": self.recurring_payment_id,
+            "recurring_payment_name": self.recurring_payment.inquiry.name,  # Inquiry name from RecurringPayment
+            "dates_related": self.dates_related,
+            "amount_paid": self.amount_paid,
+            "submitted_at": self.submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "notes": self.notes
+        }
+@app.post('/api/recurring_paid')
+def create_recurring_paid():
+    """
+    Create a new recurring payment record.
+    """
+    data = request.get_json()
+
+    # Validate required fields
+    required_fields = ['recurring_payment_id', 'amount_paid']
+    if not all(data.get(field) for field in required_fields):
+        return jsonify({"error": f"Missing required fields: {', '.join(required_fields)}"}), 400
+
+    # Validate recurring payment exists
+    recurring_payment = RecurringPayment.query.get(data['recurring_payment_id'])
+    if not recurring_payment:
+        return jsonify({"error": "Recurring payment not found."}), 404
+
+    # Create a new RecurringPaid entry
+    recurring_paid = RecurringPaid(
+        recurring_payment_id=data['recurring_payment_id'],
+        dates_related=data.get('dates_related'),  # Optional
+        amount_paid=data['amount_paid'],
+        notes=data.get('notes')  # Optional
+    )
+
+    try:
+        db.session.add(recurring_paid)
+        db.session.commit()
+        return jsonify({
+            "message": "Recurring payment record created successfully.",
+            "recurring_paid": recurring_paid.to_dict()
+        }), 201
+    except Exception as e:
+        print(f"Error creating recurring payment record: {e}")
+        return jsonify({"error": "Failed to create recurring payment record."}), 500
+
+@app.patch('/api/recurring_paid/<int:paid_id>')
+def update_recurring_paid(paid_id):
+    """
+    Update an existing recurring payment record.
+    """
+    data = request.get_json()
+
+    # Fetch the payment entry by ID
+    recurring_paid = RecurringPaid.query.get(paid_id)
+    if not recurring_paid:
+        return jsonify({"error": "Recurring payment record not found."}), 404
+
+    # Update fields if provided
+    if "dates_related" in data:
+        recurring_paid.dates_related = data["dates_related"]
+
+    if "amount_paid" in data:
+        try:
+            recurring_paid.amount_paid = float(data["amount_paid"])
+        except ValueError:
+            return jsonify({"error": "Invalid amount. Must be a number."}), 400
+
+    if "notes" in data:
+        recurring_paid.notes = data["notes"]
+
+    # Commit the changes to the database
+    try:
+        db.session.commit()
+        return jsonify({
+            "message": "Recurring payment record updated successfully.",
+            "recurring_paid": recurring_paid.to_dict()
+        }), 200
+    except Exception as e:
+        print(f"Error updating recurring payment record: {e}")
+        return jsonify({"error": "Failed to update recurring payment record."}), 500
+
+@app.delete('/api/recurring_paid/<int:paid_id>')
+def delete_recurring_paid(paid_id):
+    """
+    Delete an existing recurring payment record.
+    """
+    # Fetch the payment entry by ID
+    recurring_paid = RecurringPaid.query.get(paid_id)
+    if not recurring_paid:
+        return jsonify({"error": "Recurring payment record not found."}), 404
+
+    try:
+        # Delete the payment entry
+        db.session.delete(recurring_paid)
+        db.session.commit()
+        return jsonify({"message": f"Recurring payment record with ID {paid_id} deleted successfully."}), 200
+    except Exception as e:
+        print(f"Error deleting recurring payment record: {e}")
+        return jsonify({"error": "Failed to delete recurring payment record."}), 500
+@app.get('/api/recurring_paid')
+def get_all_recurring_paid():
+    """
+    Fetch all recurring payment records, optionally filtered by name.
+    """
+    try:
+        # Get the search parameter from the request query
+        search_name = request.args.get("name", "").strip()
+
+        # Build the query
+        query = RecurringPaid.query.join(RecurringPayment).join(Inquiry)
+
+        if search_name:
+            # Filter by name using a case-insensitive search
+            query = query.filter(Inquiry.name.ilike(f"%{search_name}%"))
+
+        # Execute the query and order by submitted_at in descending order
+        records = query.order_by(RecurringPaid.submitted_at.desc()).all()
+
+        # Return the results as JSON
+        return jsonify([record.to_dict() for record in records]), 200
+    except Exception as e:
+        print(f"Error fetching recurring payment records: {e}")
+        return jsonify({"error": "Failed to fetch recurring payment records."}), 500
+
+@app.get('/api/recurring_paid/<int:paid_id>')
+def get_recurring_paid(paid_id):
+    """
+    Fetch a single recurring payment record by its ID.
+    """
+    recurring_paid = RecurringPaid.query.get(paid_id)
+    if not recurring_paid:
+        return jsonify({"error": "Recurring payment record not found."}), 404
+
+    return jsonify(recurring_paid.to_dict()), 200
+
+@app.get('/api/paid_cleanings_summary')
+def get_paid_cleanings_summary():
+    """
+    Fetch all one-time cleanings with 'paid=True' and all recurring paid records, and calculate the total amount.
+    """
+    try:
+        # Fetch all one-time cleanings where paid is True
+        one_time_cleanings = OneTimeCleaning.query.filter_by(paid=True).all()
+        one_time_total = sum(cleaning.amount for cleaning in one_time_cleanings)
+
+        # Fetch all recurring paid records
+        recurring_paid_records = RecurringPaid.query.all()
+        recurring_total = sum(record.amount_paid for record in recurring_paid_records)
+
+        # Calculate the overall total
+        total_paid = one_time_total + recurring_total
+
+        # Prepare response data
+        response_data = {
+            "one_time_cleanings": [cleaning.to_dict() for cleaning in one_time_cleanings],
+            "recurring_paid_records": [record.to_dict() for record in recurring_paid_records],
+            "one_time_total": one_time_total,
+            "recurring_total": recurring_total,
+            "total_paid": total_paid
+        }
+
+        return jsonify(response_data), 200
+    except Exception as e:
+        print(f"Error fetching paid cleanings summary: {e}")
+        return jsonify({"error": "Failed to fetch paid cleanings summary."}), 500
+
+@app.get('/api/cleaning_dates_summary')
+def get_cleaning_dates_summary():
+    """
+    Fetch all one-time cleaning dates and associated inquiries along with
+    recurring payment 'dates_related' and their associated inquiries.
+    """
+    try:
+        # Fetch one-time cleanings and their associated inquiries
+        one_time_cleanings = OneTimeCleaning.query.all()
+        one_time_data = [
+            {
+                "cleaning_id": cleaning.id,
+                "date_time": cleaning.date_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "inquiry_id": cleaning.inquiry_id,
+                "inquiry_name": cleaning.inquiry.name,
+                "paid": cleaning.paid,  # Include the 'paid' status
+                "notes": cleaning.notes or "No notes",  # Include notes
+                "phone_number": cleaning.inquiry.phone_number,  # Include phone number here
+
+            }
+            for cleaning in one_time_cleanings
+        ]
+
+        # Fetch recurring payments with 'dates_related' and their associated inquiries
+        recurring_paid_records = RecurringPaid.query.all()
+        recurring_paid_data = [
+            {
+                "recurring_paid_id": record.id,
+                "dates_related": record.dates_related,
+                "recurring_payment_id": record.recurring_payment_id,
+                "inquiry_id": record.recurring_payment.inquiry_id,
+                "inquiry_name": record.recurring_payment.inquiry.name,
+                "notes": record.notes or "Recurring event, check inquiry for details.",  # Include notes
+                "phone_number": record.recurring_payment.inquiry.phone_number,  # Include phone number here
+
+            }
+            for record in recurring_paid_records
+        ]
+
+        # Combine the data
+        response_data = {
+            "one_time_cleanings": one_time_data,
+            "recurring_paid_records": recurring_paid_data
+        }
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        print(f"Error fetching cleaning dates summary: {e}")
+        return jsonify({"error": "Failed to fetch cleaning dates summary."}), 500
+
+@app.get('/api/total_paid_cleanings_summary')
+def get_total_paid_cleanings_summary():
+    """
+    Fetch the total amounts for paid one-time cleanings and recurring paid records.
+    """
+    try:
+        # Calculate the total amount for paid one-time cleanings
+        one_time_cleanings = OneTimeCleaning.query.filter_by(paid=True).all()
+        one_time_total = sum(cleaning.amount for cleaning in one_time_cleanings)
+
+        # Calculate the total amount for recurring paid records
+        recurring_paid_records = RecurringPaid.query.all()
+        recurring_total = sum(record.amount_paid for record in recurring_paid_records)
+
+        # Prepare the summarized response
+        response_data = {
+            "one_time_total": one_time_total,
+            "recurring_total": recurring_total,
+            "total_paid": one_time_total + recurring_total
+        }
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        print(f"Error fetching total paid cleanings summary: {e}")
+        return jsonify({"error": "Failed to fetch total paid cleanings summary."}), 500
 
 
 #-------------------------------------------------------------------------------
@@ -941,7 +1552,6 @@ def delete_package(package_id):
 def is_valid_url(url):
     return re.match(r'^https?://', url) is not None
 @app.get('/api/packages')
-@cross_origin()  # Allow all origins
 def get_packages():
     """
     Retrieve all packages.
