@@ -72,7 +72,7 @@ def before_request():
     # List of public paths that don't require authentication
     public_paths = [
         "/signin", "/forgot_password", "/reset-password",
-        "/api/gallery", "/api/contact", "/uploads", "/api/packages", "/api/reviews", "/api/inquiries", "/api/earnings", "/api/one_time_cleanings", "/api/recurring_payments", "/api/recurring_paid", "/api/cleaning_dates_summary", "/api/total_paid_cleanings_summary"
+        "/api/gallery", "/api/contact", "/uploads", "/api/packages", "/api/reviews", "/api/inquiries", "/api/earnings", "/api/one_time_cleanings", "/api/recurring_payments", "/api/recurring_paid", "/api/cleaning_dates_summary", "/api/total_paid_cleanings_summary", "api/old_records", "api/cleanup_old_records", "/api/delete_old_records"
     ]
 
     # Check if request path matches any public path
@@ -417,7 +417,7 @@ class Inquiry(db.Model):
     phone_number = db.Column(db.String(15), nullable=True)  
     call_or_text = db.Column(db.String(10), nullable=False)  
     description = db.Column(db.Text, nullable=False)
-    status = db.Column(db.String(50), nullable=False, default="pending")
+    status = db.Column(db.String(50), nullable=False, default="New Inquiry")  # Updated default value
     submitted_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)
 
 
@@ -434,7 +434,6 @@ class Inquiry(db.Model):
 
 
         }
-
 @app.post('/api/contact')
 def submit_inquiry():
     """
@@ -447,90 +446,48 @@ def submit_inquiry():
     if not all(data.get(field) for field in required_fields):
         return jsonify({"error": f"Missing required fields: {', '.join(required_fields)}"}), 400
 
-    status = data.get('status', 'pending').lower()  # Default to 'pending' if not provided
-    allowed_statuses = {"pending", "booked", "contacted", "services paused"}
-    if status not in allowed_statuses:
-        return jsonify({"error": f"Invalid status. Allowed values: {', '.join(allowed_statuses)}"}), 400
-
-    name = data.get('name')
-    email = data.get('email')
-    phone_number = data.get('phone_number')
+    # Validate call_or_text
     call_or_text = data.get('call_or_text').lower()
-    description = data.get('description')
-    status=status  # Add this line
-
-
     if call_or_text not in ["call", "text"]:
         return jsonify({"error": "Invalid value for 'call_or_text'. Must be 'call' or 'text'."}), 400
 
     # Validate email format
+    email = data.get('email')
     if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
         return jsonify({"error": "Invalid email format"}), 400
 
-    # Save the inquiry to the database
+    # Create new inquiry
     new_inquiry = Inquiry(
-        name=name,
+        name=data.get('name'),
         email=email,
-        phone_number=phone_number,
+        phone_number=data.get('phone_number'),
         call_or_text=call_or_text,
-        description=description
+        description=data.get('description'),
+        # Do not pass 'status' here; let the database handle the default
     )
+
     db.session.add(new_inquiry)
     db.session.commit()
 
+    # Format the submission time
     local_tz = timezone("US/Eastern")  # Replace "US/Eastern" with your actual timezone
     submitted_at_local = new_inquiry.submitted_at.replace(tzinfo=timezone("UTC")).astimezone(local_tz)
 
     # Send email to admin
     try:
         admin_email = os.getenv("ADMIN_EMAIL")  # Admin email from environment variable
-        subject = f"New Inquiry from {name}"
+        subject = f"New Inquiry from {new_inquiry.name}"
         body = f"""
         <html>
-        <head>
-            <style>
-            body {{
-                font-family: Arial, sans-serif;
-                color: #333;
-                margin: 0;
-                padding: 20px;
-                background-color: #f9f9f9;
-            }}
-            .container {{
-                background: #fff;
-                border-radius: 8px;
-                padding: 20px;
-                max-width: 600px;
-                margin: 20px auto;
-                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-            }}
-            h2 {{
-                color: #007bff;
-            }}
-            p {{
-                margin: 8px 0;
-                line-height: 1.5;
-            }}
-            .footer {{
-                margin-top: 20px;
-                font-size: 12px;
-                color: #888;
-                text-align: center;
-            }}
-            </style>
-        </head>
         <body>
-            <div class="container">
+            <div>
             <h2>📧 New Inquiry Received</h2>
-            <p><strong>Name:</strong> {name}</p>
-            <p><strong>Email:</strong> {email}</p>
-            <p><strong>Phone Number:</strong> {phone_number or "N/A"}</p>
-            <p><strong>Contact Preference:</strong> {call_or_text.capitalize()}</p>
-            <p><strong>Description:</strong> {description}</p>
-            <div class="footer">
-                <p>Submitted on {submitted_at_local.strftime('%A, %B %d, %Y %I:%M %p')}</p>
-                <p>&copy; Your Company Name</p>
-            </div>
+            <p><strong>Name:</strong> {new_inquiry.name}</p>
+            <p><strong>Email:</strong> {new_inquiry.email}</p>
+            <p><strong>Phone Number:</strong> {new_inquiry.phone_number or "N/A"}</p>
+            <p><strong>Contact Preference:</strong> {new_inquiry.call_or_text.capitalize()}</p>
+            <p><strong>Description:</strong> {new_inquiry.description}</p>
+            <p>Submitted on {submitted_at_local.strftime('%A, %B %d, %Y %I:%M %p')}</p>
             </div>
         </body>
         </html>
@@ -546,6 +503,7 @@ def submit_inquiry():
         return jsonify({"error": "Inquiry submitted but failed to notify the admin."}), 500
 
     return jsonify({"message": "Inquiry submitted successfully.", "inquiry": new_inquiry.to_dict()}), 201
+
 
 
 def send_email(recipient, subject, body, background_image_url=None):
@@ -617,19 +575,21 @@ def update_inquiry(inquiry_id):
     if "description" in data:
         inquiry.description = data["description"]
     if "status" in data:
-        status = data["status"].lower()
-        allowed_statuses = {"pending", "booked", "contacted", "services paused"}
+        status = data["status"].strip().lower()
+        allowed_statuses = {"new inquiry", "booked", "contacted", "paused", "completed"}
         if status not in allowed_statuses:
             print(f"Invalid status value: {status}")
             return jsonify({"error": f"Invalid status. Allowed values: {', '.join(allowed_statuses)}"}), 400
-        inquiry.status = status
+        inquiry.status = status.title()  # Store in Title Case
 
     # Commit the changes to the database
     try:
         db.session.commit()
-        print(f"Inquiry with ID {inquiry_id} updated successfully.")
-        return jsonify({"message": "Inquiry updated successfully.", "inquiry": inquiry.to_dict()}), 200
+        updated_inquiry = Inquiry.query.get(inquiry_id)  # Verify changes persisted
+        print(f"Updated Inquiry from DB: {updated_inquiry.to_dict()}")
+        return jsonify({"message": "Inquiry updated successfully.", "inquiry": updated_inquiry.to_dict()}), 200
     except Exception as e:
+        db.session.rollback()
         print(f"Error updating inquiry: {e}")
         return jsonify({"error": "Failed to update inquiry."}), 500
 
@@ -934,7 +894,6 @@ def create_recurring_payment():
         print(f"Error creating recurring payment: {e}")
         return jsonify({"error": "Failed to create recurring payment."}), 500
 
-
 @app.patch('/api/recurring_payments/<int:payment_id>')
 def update_recurring_payment(payment_id):
     """
@@ -960,6 +919,14 @@ def update_recurring_payment(payment_id):
     if "notes" in data:
         recurring_payment.notes = data["notes"]
 
+    # Update the inquiry_id if provided
+    if "inquiry_id" in data:
+        # Optionally, check if the provided inquiry_id is valid
+        inquiry = Inquiry.query.get(data["inquiry_id"])
+        if not inquiry:
+            return jsonify({"error": "Inquiry not found."}), 404
+        recurring_payment.inquiry_id = data["inquiry_id"]
+
     # Commit the changes to the database
     try:
         db.session.commit()
@@ -970,6 +937,7 @@ def update_recurring_payment(payment_id):
     except Exception as e:
         print(f"Error updating recurring payment: {e}")
         return jsonify({"error": "Failed to update recurring payment."}), 500
+
 @app.delete('/api/recurring_payments/<int:payment_id>')
 def delete_recurring_payment(payment_id):
     """
@@ -1562,6 +1530,146 @@ def get_packages():
     except Exception as e:
         print(f"ERROR: Failed to fetch packages - {e}")
         return jsonify({"error": "Failed to fetch packages."}), 500
+
+from datetime import datetime, timedelta
+
+@app.delete('/api/cleanup_old_records')
+def delete_old_records():
+    """
+    Delete one-time cleanings and recurring paid records older than 90 days.
+    """
+    try:
+        # Define the cutoff date
+        cutoff_date = datetime.utcnow() - timedelta(days=90)
+        print(f"Cutoff date for deletion: {cutoff_date}")
+
+        # Track deleted records count
+        recurring_paid_deleted_count = 0
+
+        # Delete old one-time cleanings
+        old_one_time_cleanings = OneTimeCleaning.query.filter(OneTimeCleaning.date_time < cutoff_date).all()
+        print(f"Found {len(old_one_time_cleanings)} old one-time cleanings")
+        for cleaning in old_one_time_cleanings:
+            db.session.delete(cleaning)
+        print(f"Deleted {len(old_one_time_cleanings)} one-time cleanings")
+
+        # Delete old recurring paid records
+        old_recurring_paid = RecurringPaid.query.all()
+        print(f"Found {len(old_recurring_paid)} recurring paid records")
+
+        for record in old_recurring_paid:
+            if record.dates_related:
+                print(f"Processing recurring paid record ID {record.id}, dates_related: {record.dates_related}")
+                try:
+                    # Handle multiple dates in dates_related field
+                    dates = record.dates_related.split(",")
+                    for date_str in dates:
+                        date_str = date_str.strip()
+                        try:
+                            related_date = datetime.strptime(date_str, "%Y-%m-%dT%H:%M")
+                            print(f"Parsed related date: {related_date}")
+
+                            if related_date < cutoff_date:
+                                db.session.delete(record)
+                                recurring_paid_deleted_count += 1
+                                print(f"Deleted recurring paid record ID {record.id}")
+                                break  # Stop once we find one valid date
+                        except ValueError:
+                            print(f"Skipping date {date_str} in record {record.id}, invalid date format")
+
+                except ValueError:
+                    print(f"Skipping record {record.id}, invalid dates_related format: {record.dates_related}")
+
+        # Commit the deletions
+        db.session.commit()
+        print(f"Total recurring paid records deleted: {recurring_paid_deleted_count}")
+
+        return jsonify({
+            "message": "Old records deleted successfully.",
+            "one_time_cleanings_deleted": len(old_one_time_cleanings),
+            "recurring_paid_deleted": recurring_paid_deleted_count
+        }), 200
+
+    except Exception as e:
+        print(f"Error deleting old records: {e}")
+        db.session.rollback()
+        return jsonify({"error": "Failed to delete old records."}), 500
+
+
+def format_date(date_obj):
+    if date_obj:
+        return date_obj.strftime("%A, %B %d, %Y %I:%M %p")
+    return None
+
+@app.get('/api/old_records')
+def get_old_records():
+    """
+    Fetch one-time cleanings and recurring paid records older than 90 days.
+    """
+    try:
+        ninety_days_ago = datetime.utcnow() - timedelta(days=90)
+        print(f"Cutoff date for old records: {ninety_days_ago}")
+
+        # Fetch one-time cleanings older than 90 days
+        old_one_time_cleanings = OneTimeCleaning.query.filter(OneTimeCleaning.date_time < ninety_days_ago).all()
+        print(f"Found {len(old_one_time_cleanings)} old one-time cleanings")
+
+        # Fetch recurring paid records where the related date is older than 90 days
+        old_recurring_paid = RecurringPaid.query.filter(
+            RecurringPaid.dates_related.isnot(None)
+        ).all()
+        print(f"Found {len(old_recurring_paid)} recurring paid records with dates_related")
+
+        filtered_recurring_paid = []
+        for record in old_recurring_paid:
+            if record.dates_related:
+                print(f"Processing recurring paid record ID {record.id}, dates_related: {record.dates_related}")
+                try:
+                    # Split the date range by comma if it exists
+                    dates = record.dates_related.split(",")
+                    for date_str in dates:
+                        # Clean up any extra spaces and parse the date
+                        date_str = date_str.strip()
+                        try:
+                            related_date = datetime.strptime(date_str, "%Y-%m-%dT%H:%M")
+                            print(f"Parsed related date: {related_date}")
+
+                            if related_date < ninety_days_ago:
+                                filtered_recurring_paid.append(record)
+                                print(f"Record ID {record.id} is older than 90 days and is added.")
+                                break  # Stop once we find one valid date
+
+                        except ValueError:
+                            print(f"Skipping date {date_str} in record {record.id}, invalid date format")
+
+                except ValueError:
+                    print(f"Skipping record {record.id}, invalid date format: {record.dates_related}")
+
+        # Format response
+        old_records = [
+            {
+                "id": record.id,
+                "name": record.inquiry.name,
+                "submitted_at": format_date(record.date_time),
+                "type": "One-time Cleaning"
+            } for record in old_one_time_cleanings
+        ] + [
+            {
+                "id": record.id,
+                "name": record.recurring_payment.inquiry.name,
+                "submitted_at": format_date(record.submitted_at),
+                "dates_related": [format_date(datetime.strptime(date_str.strip(), "%Y-%m-%dT%H:%M")) for date_str in record.dates_related.split(",")],
+                "type": "Recurring Paid"
+            } for record in filtered_recurring_paid
+        ]
+
+        print(f"Total records to return: {len(old_records)}")
+        return jsonify(old_records), 200
+
+    except Exception as e:
+        print(f"Error fetching old records: {e}")
+        return jsonify({"error": "Failed to fetch old records."}), 500
+
 
 # Run the app
 if __name__ == "__main__":
