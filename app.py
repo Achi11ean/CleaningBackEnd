@@ -121,6 +121,45 @@ class User(db.Model):
         return bcrypt.check_password_hash(self.password_hash, plaintext_password)
 
 
+from flask import request, jsonify
+from sqlalchemy.exc import IntegrityError
+
+@app.route('/signup', methods=['POST'])
+def signup():
+    # Parse data from the request
+    data = request.get_json()
+
+    # Validate the data
+    username = data.get("username")
+    email = data.get("email")
+    password = data.get("password")
+
+    if not username or not email or not password:
+        return jsonify({"message": "Missing required fields"}), 400
+
+    # Check if user already exists
+    user = User.query.filter_by(email=email).first()
+    if user:
+        return jsonify({"message": "Email already registered"}), 400
+
+    user = User.query.filter_by(username=username).first()
+    if user:
+        return jsonify({"message": "Username already taken"}), 400
+
+    # Create a new user
+    new_user = User(username=username, email=email)
+    new_user.password = password  # This will hash the password
+
+    # Add the user to the database
+    try:
+        db.session.add(new_user)
+        db.session.commit()
+        return jsonify({"message": "User created successfully"}), 201
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"message": "Error creating user"}), 500
+
+
 # Route for Admin Sign-in
 @app.route('/signin', methods=['POST'])
 def signin():
