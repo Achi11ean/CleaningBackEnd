@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 app = Flask(__name__)
 from flask_cors import CORS
 
-CORS(app, supports_credentials=True, resources={r"/*": {"origins": os.getenv("CORS_ORIGINS")}})
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": os.getenv("CORS_ORIGINS", "*").split(",")}})
 def token_required(f):
     def wrapper(*args, **kwargs):
         if request.path.startswith('/uploads'):
