@@ -192,8 +192,8 @@ class Gallery(db.Model):
     __tablename__ = "gallery"
 
     id = db.Column(db.Integer, primary_key=True)
-    image_url = db.Column(db.String(255), nullable=False)
-    caption = db.Column(db.String(255), nullable=True)
+    image_url = db.Column(db.String(500), nullable=False)
+    caption = db.Column(db.String(500), nullable=True)
     category = db.Column(db.String(50), nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)
 
@@ -285,10 +285,10 @@ class Review(db.Model):
     __tablename__ = "reviews"
 
     id = db.Column(db.Integer, primary_key=True)
-    photo_url = db.Column(db.String(255), nullable=True)  # Store the image URL directly
+    photo_url = db.Column(db.String(500), nullable=True)  # Store the image URL directly
     reviewer_name = db.Column(db.String(50), nullable=False)
     rating = db.Column(db.Integer, nullable=False)  # Rating out of 5
-    comment = db.Column(db.String(255), nullable=True)
+    comment = db.Column(db.String(500), nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)
     is_approved = db.Column(db.Boolean, default=False, nullable=False)  # New field
 
