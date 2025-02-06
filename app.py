@@ -883,7 +883,7 @@ class RecurringPayment(db.Model):
     inquiry_id = db.Column(db.Integer, db.ForeignKey('inquiries.id'), nullable=False)  # Foreign key to Inquiry
     amount = db.Column(db.Float, nullable=False)  # Amount for the recurring payment
     frequency = db.Column(db.String(250), nullable=False)  # Frequency of the payment (e.g., "weekly", "monthly")
-    notes = db.Column(db.String(255), nullable=True)  # Optional notes for the recurring payment
+    notes = db.Column(db.String(600), nullable=True)  # Optional notes for the recurring payment
 
     inquiry = db.relationship('Inquiry', backref='recurring_payments')  # Relationship to Inquiry
 
@@ -1040,10 +1040,10 @@ class RecurringPaid(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     recurring_payment_id = db.Column(db.Integer, db.ForeignKey('recurring_payments.id'), nullable=False)  # Foreign key to RecurringPayment
-    dates_related = db.Column(db.String(255), nullable=True)  # Dates the payment relates to
+    dates_related = db.Column(db.String(500), nullable=True)  # Dates the payment relates to
     amount_paid = db.Column(db.Float, nullable=False)  # Amount paid for this occurrence
     submitted_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)  # Timestamp for when the payment was submitted
-    notes = db.Column(db.String(255), nullable=True)  # Optional notes
+    notes = db.Column(db.String(500), nullable=True)  # Optional notes
 
     recurring_payment = db.relationship('RecurringPayment', backref='payments_made')  # Relationship to RecurringPayment
 
