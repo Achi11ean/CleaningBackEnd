@@ -72,7 +72,7 @@ def before_request():
     # List of public paths that don't require authentication
     public_paths = [
         "/signin", "/forgot_password", "/reset-password",
-        "/api/gallery", "/api/contact", "/uploads", "/api/packages", "/api/reviews", "/api/inquiries", "/api/earnings", "/api/one_time_cleanings", "/api/recurring_payments", "/api/recurring_paid", "/api/cleaning_dates_summary", "/api/total_paid_cleanings_summary", "api/old_records", "api/cleanup_old_records", "/api/delete_old_records"
+        "/api/gallery", "/api/contact", "/uploads", "/api/packages", "/api/reviews", "/api/inquiries", "/api/earnings", "/api/one_time_cleanings", "/api/recurring_payments", "/api/recurring_paid", "/api/cleaning_dates_summary", "/api/total_paid_cleanings_summary", "api/old_records", "api/cleanup_old_records", "/api/delete_old_records", "/signup"
     ]
 
     # Check if request path matches any public path
