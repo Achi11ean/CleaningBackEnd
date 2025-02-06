@@ -288,7 +288,7 @@ class Review(db.Model):
     photo_url = db.Column(db.String(500), nullable=True)  # Store the image URL directly
     reviewer_name = db.Column(db.String(50), nullable=False)
     rating = db.Column(db.Integer, nullable=False)  # Rating out of 5
-    comment = db.Column(db.String(500), nullable=True)
+    comment = db.Column(db.String(600), nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)
     is_approved = db.Column(db.Boolean, default=False, nullable=False)  # New field
 
