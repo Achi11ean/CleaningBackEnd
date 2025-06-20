@@ -445,6 +445,73 @@ def update_review(review_id):
 
     return jsonify({"message": "Review updated successfully and marked as pending!", "review": review.to_dict()}), 200
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class ContactFormStatus(db.Model):
+    __tablename__ = "contact_form_status"
+    id = db.Column(db.Integer, primary_key=True)
+    is_open = db.Column(db.Boolean, default=True, nullable=False)
+
+    def to_dict(self):
+        return {"id": self.id, "is_open": self.is_open}
+
+
+
+@app.get('/api/contact-status')
+def get_contact_status():
+    status = ContactFormStatus.query.first()
+    if not status:
+        # Default to open if no row exists
+        return jsonify({"is_open": True}), 200
+    return jsonify(status.to_dict()), 200
+
+
+
+@app.patch('/api/contact-status')
+@jwt_required()  # 🔐 Require admin-level token if needed
+def update_contact_status():
+    data = request.get_json()
+    is_open = data.get("is_open")
+
+    if is_open is None:
+        return jsonify({"error": "Missing 'is_open' boolean in request"}), 400
+
+    status = ContactFormStatus.query.first()
+    if not status:
+        status = ContactFormStatus(is_open=is_open)
+        db.session.add(status)
+    else:
+        status.is_open = is_open
+
+    db.session.commit()
+    return jsonify({"message": "Contact form status updated", "is_open": status.is_open}), 200
+
+
+
+
+
+
+
+
+
+
+
+
 #----------------------------------------------------------------------------------------------------
 
 class Inquiry(db.Model):
